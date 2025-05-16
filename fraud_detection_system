@@ -1,0 +1,205 @@
+
+import pandas as pd
+import numpy as np
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import (precision_score, recall_score, 
+                            confusion_matrix, classification_report)
+from imblearn.over_sampling import SMOTE
+from imblearn.pipeline import Pipeline as ImbPipeline
+from sklearn.preprocessing import StandardScaler
+from sklearn.compose import ColumnTransformer
+import joblib
+import time
+from pathlib import Path
+from datetime import datetime
+
+DATA_PATH = "data/transactions.csv"
+MODEL_PATH = "models/fraud_model.pkl"
+PREPROCESSOR_PATH = "models/preprocessor.pkl"
+ALERT_THRESHOLD = 0.85  
+
+class FraudDetectionSystem:
+    def __init__(self):
+        self.model = None
+        self.preprocessor = None
+        self.features = None
+        self.last_alert_time = None
+        
+    def load_data(self):
+        """Load and preprocess transaction data"""
+        try:
+            df = pd.read_csv(DATA_PATH, parse_dates=['transaction_time'])
+            
+            df = self._create_time_features(df)
+            df = self._create_behavioral_features(df)
+
+            if 'is_fraud' not in df.columns:
+                raise ValueError("Data must contain 'is_fraud' column")
+                
+            return df
+        
+        except Exception as e:
+            print(f"Data loading error: {str(e)}")
+            return None
+
+    def _create_time_features(self, df):
+        """Create time-based features"""
+        df['hour'] = df['transaction_time'].dt.hour
+        df['day_of_week'] = df['transaction_time'].dt.dayofweek
+        df['time_since_last'] = df.groupby('user_id')['transaction_time'].diff().dt.total_seconds()
+        df['transactions_last_hour'] = df.groupby('user_id')['transaction_time'].transform(
+            lambda x: x.rolling('1h').count()
+        )
+        return df.fillna(0)
+
+    def _create_behavioral_features(self, df):
+        """Create behavioral features"""
+        df['amount_deviation'] = df.groupby('user_id')['amount'].transform(
+            lambda x: (x - x.mean()) / x.std()
+        )
+        df['location_variance'] = df.groupby('user_id')['merchant_id'].transform('nunique')
+        return df.fillna(0)
+
+    def train_model(self, df):
+        """Train fraud detection model"""
+        try:
+            
+            numeric_features = ['amount', 'time_since_last', 'transactions_last_hour',
+                              'amount_deviation', 'location_variance']
+            categorical_features = ['hour', 'day_of_week', 'merchant_category']
+            
+            self.features = numeric_features + categorical_features
+            X = df[self.features]
+            y = df['is_fraud']
+            
+            numeric_transformer = StandardScaler()
+            categorical_transformer = 'passthrough'
+            
+            self.preprocessor = ColumnTransformer(
+                transformers=[
+                    ('num', numeric_transformer, numeric_features),
+                    ('cat', categorical_transformer, categorical_features)
+                ])
+            
+            self.model = ImbPipeline([
+                ('preprocessor', self.preprocessor),
+                ('smote', SMOTE(random_state=42)),
+                ('classifier', RandomForestClassifier(
+                    n_estimators=150,
+                    max_depth=10,
+                    class_weight='balanced',
+                    random_state=42,
+                    n_jobs=-1
+                ))
+            ])
+            
+            X_train, X_test, y_train, y_test = train_test_split(
+                X, y, test_size=0.3, stratify=y, random_state=42
+            )
+            start_time = time.time()
+            self.model.fit(X_train, y_train)
+            training_time = time.time() - start_time
+            
+            y_pred = self.model.predict(X_test)
+            y_proba = self.model.predict_proba(X_test)[:, 1]
+            
+            print("\nModel Evaluation:")
+            print(f"Training time: {training_time:.2f}s")
+            print(f"Precision: {precision_score(y_test, y_pred):.3f}")
+            print(f"Recall: {recall_score(y_test, y_pred):.3f}")
+            print("\nClassification Report:")
+            print(classification_report(y_test, y_pred))
+            
+            return True
+            
+        except Exception as e:
+            print(f"Training error: {str(e)}")
+            return False
+
+    def save_artifacts(self):
+        """Save model and preprocessing artifacts"""
+        try:
+            Path("models").mkdir(exist_ok=True)
+            joblib.dump(self.model, MODEL_PATH)
+            joblib.dump(self.preprocessor, PREPROCESSOR_PATH)
+            print(f"\nSaved artifacts to {MODEL_PATH} and {PREPROCESSOR_PATH}")
+        except Exception as e:
+            print(f"Error saving artifacts: {str(e)}")
+
+    def detect_fraud(self, transaction):
+        """Real-time fraud detection for single transaction"""
+        try:
+            
+            if isinstance(transaction, dict):
+                transaction = pd.DataFrame([transaction])
+            
+            transaction = self._create_time_features(transaction)
+            transaction = self._create_behavioral_features(transaction)
+            
+            X = transaction[self.features]
+            
+            proba = self.model.predict_proba(X)[0, 1]
+            is_fraud = proba >= ALERT_THRESHOLD
+            
+            if is_fraud:
+                self.last_alert_time = datetime.now()
+                print(f"🚨 Fraud alert! Probability: {proba:.1%}")
+                return True, proba
+            return False, proba
+            
+        except Exception as e:
+            print(f"Detection error: {str(e)}")
+            return False, 0.0
+
+    def generate_simulation_data(self, n_samples=1000):
+        """Generate synthetic data for testing"""
+        data = {
+            'transaction_id': [f'txn_{i}' for i in range(n_samples)],
+            'user_id': np.random.choice(['user_1', 'user_2', 'user_3'], n_samples),
+            'amount': np.round(np.random.exponential(100, n_samples), 2),
+            'merchant_id': [f'merch_{np.random.randint(1,50)}' for _ in range(n_samples)],
+            'merchant_category': np.random.choice(['retail', 'travel', 'food', 'entertainment'], n_samples),
+            'transaction_time': pd.date_range(end=datetime.now(), periods=n_samples, freq='min'),
+            'is_fraud': np.random.choice([0, 1], n_samples, p=[0.98, 0.02])
+        }
+        return pd.DataFrame(data)
+
+def main():
+    """End-to-end system execution"""
+    fds = FraudDetectionSystem()
+    
+    print("Loading transaction data...")
+    transactions = fds.load_data()
+    
+    if transactions is None:
+        print("Generating synthetic data for testing...")
+        transactions = fds.generate_simulation_data()
+        transactions.to_csv(DATA_PATH, index=False)
+        print(f"Sample data saved to {DATA_PATH}")
+    
+    print("\nTraining fraud detection model...")
+    if fds.train_model(transactions):
+        fds.save_artifacts()
+        
+        test_txn = {
+            'user_id': 'user_1',
+            'amount': 950.00,
+            'merchant_id': 'merch_45',
+            'merchant_category': 'travel',
+            'transaction_time': datetime.now()
+        }
+        
+        print("\nTesting real-time detection:")
+        is_fraud, proba = fds.detect_fraud(test_txn)
+        print(f"Transaction fraud probability: {proba:.1%}")
+        
+        print("\nRunning performance test...")
+        test_data = fds.generate_simulation_data(100)
+        start = time.time()
+        results = [fds.detect_fraud(txn.to_dict()) for _, txn in test_data.iterrows()]
+        elapsed = time.time() - start
+        print(f"Processed {len(results)} txns in {elapsed:.3f}s ({len(results)/elapsed:.1f} txns/sec)")
+
+if __name__ == "__main__":
+    main()
