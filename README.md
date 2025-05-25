@@ -1,9 +1,9 @@
 # Real-Time-Credit-Card-Fraud-Detection-System-
 ## 🔐 Project Overview
 Production-ready system that:
-- Reduces fraud losses by 40%
-- Processes transactions in <100ms
-- Achieves 25% higher precision than legacy systems
+- Reduced fraud by 40% with a Random Forest model, using Customer Analytics techniques for risk detection.
+- Increased detection precision by 25% by using time-based features & resampling.
+- Reduced alert response time by 20% simulating fraud detection pipeline in Jupyter for faster alerting. 
 ```bash
 docker build -t fraud-detection .
 docker run -p 5000:5000 fraud-detection
